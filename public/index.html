@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NBA Channel Poster</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏀</text></svg>" />
+  <style>
+    :root {
+      --bg: #f4f5f7; --card: #fff; --text: #16181d; --muted: #6b7280; --line: #e3e5e9;
+      --accent: #c9082a; --accent-ink: #fff; --ok: #0a7d38; --err: #b42318;
+      --chat-bg: #efeae2; --bubble: #fff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1115; --card: #181b21; --text: #e9eaee; --muted: #9aa0ab; --line: #2a2e36;
+        --chat-bg: #0b141a; --bubble: #202c33;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 16px; display: flex; align-items: center; gap: 10px; }
+    header h1 { font-size: 18px; margin: 0; }
+    header .status { margin-left: auto; font-size: 12px; color: var(--muted); }
+    main { display: grid; gap: 16px; padding: 0 16px 32px; max-width: 1040px; margin: 0 auto;
+      grid-template-columns: minmax(0, 1fr); }
+    @media (min-width: 860px) { main { grid-template-columns: minmax(0, 1fr) 380px; } }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+    .tabs button { border: 1px solid var(--line); background: transparent; color: var(--text);
+      border-radius: 999px; padding: 7px 12px; font: inherit; font-size: 14px; cursor: pointer; }
+    .tabs button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+    input[type=text], input[type=password], textarea { width: 100%; padding: 10px 12px; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; }
+    textarea { min-height: 84px; resize: vertical; }
+    .drop { border: 2px dashed var(--line); border-radius: 12px; padding: 18px; text-align: center;
+      color: var(--muted); cursor: pointer; position: relative; }
+    .drop.over { border-color: var(--accent); }
+    .drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .drop img { max-width: 100%; max-height: 220px; border-radius: 8px; display: block; margin: 0 auto 8px; }
+    .row { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    .btn { border: 0; border-radius: 10px; padding: 12px 18px; font: inherit; font-weight: 600; cursor: pointer; }
+    .btn.primary { background: var(--accent); color: var(--accent-ink); flex: 1; }
+    .btn.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
+    .btn:disabled { opacity: .55; cursor: default; }
+    .msg { margin-top: 12px; font-size: 14px; min-height: 1.4em; }
+    .msg.ok { color: var(--ok); } .msg.err { color: var(--err); }
+    .chat { background: var(--chat-bg); border-radius: 12px; padding: 14px; min-height: 200px; }
+    .bubble { background: var(--bubble); border-radius: 8px; padding: 4px; max-width: 100%;
+      box-shadow: 0 1px .5px rgba(0,0,0,.13); }
+    .bubble img { width: 100%; border-radius: 6px; display: block; }
+    .bubble .cap { padding: 6px 8px 4px; white-space: pre-wrap; word-wrap: break-word; }
+    .bubble .time { text-align: right; font-size: 11px; color: var(--muted); padding: 0 6px 2px; }
+    .cap code { font-family: ui-monospace, monospace; }
+    h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+    .history { margin-top: 16px; }
+    .history li { font-size: 13px; color: var(--muted); margin: 4px 0; }
+    .history ul { padding-left: 18px; margin: 0; }
+    .count { font-size: 12px; color: var(--muted); text-align: right; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span style="font-size:22px">🏀</span>
+    <h1>NBA Channel Poster</h1>
+    <span class="status" id="status"></span>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="tabs" id="tabs" role="group" aria-label="Post type"></div>
+
+      <div class="drop" id="drop">
+        <input type="file" id="file" accept="image/jpeg,image/png,image/webp" aria-label="Image" />
+        <div id="dropInner">📷 Tap to add an image, or drop / paste one here<br><small>Optional</small></div>
+      </div>
+
+      <form id="form" autocomplete="off"></form>
+
+      <div id="pwWrap" hidden>
+        <label for="pw">Password</label>
+        <input type="password" id="pw" placeholder="Poster password" />
+      </div>
+
+      <div class="row">
+        <button class="btn ghost" id="clear" type="button">Clear</button>
+        <button class="btn primary" id="post" type="button">Post to channel</button>
+      </div>
+      <div class="msg" id="msg" role="status"></div>
+    </section>
+
+    <aside>
+      <section class="card">
+        <h2>Preview</h2>
+        <div class="chat"><div class="bubble" id="preview"></div></div>
+        <div class="count" id="count"></div>
+        <div class="row">
+          <button class="btn ghost" id="copy" type="button" style="flex:1">Copy text</button>
+        </div>
+      </section>
+      <section class="card history">
+        <h2>Recent posts</h2>
+        <ul id="history"><li>Nothing yet</li></ul>
+      </section>
+    </aside>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
