@@ -58,6 +58,10 @@
     .history { margin-top: 16px; }
     .history li { font-size: 13px; color: var(--muted); margin: 4px 0; }
     .history ul { padding-left: 18px; margin: 0; }
+    .wa #waStatus { font-size: 14px; }
+    .code { font: 700 28px/1.2 ui-monospace, monospace; letter-spacing: .12em; text-align: center;
+      margin: 14px 0 6px; padding: 12px; border-radius: 10px; background: var(--bg); }
+    .steps { font-size: 13px; color: var(--muted); padding-left: 18px; margin: 8px 0 0; }
     .count { font-size: 12px; color: var(--muted); text-align: right; margin-top: 4px; }
   </style>
 </head>
@@ -92,7 +96,24 @@
     </section>
 
     <aside>
-      <section class="card">
+      <section class="card wa" id="waCard">
+        <h2>WhatsApp</h2>
+        <div id="waStatus">Checking…</div>
+        <div id="waLink" hidden>
+          <label for="phone">Phone number of the WhatsApp account that owns the channel</label>
+          <input type="text" id="phone" inputmode="tel" placeholder="+1 555 123 4567" />
+          <div class="row"><button class="btn primary" id="pair" type="button">Get pairing code</button></div>
+          <div id="pairCode" hidden>
+            <div class="code" id="code"></div>
+            <ol class="steps">
+              <li>On that phone open WhatsApp → <b>Linked devices</b> → <b>Link a device</b></li>
+              <li>Tap <b>Link with phone number instead</b></li>
+              <li>Type the code above</li>
+            </ol>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="margin-top:16px">
         <h2>Preview</h2>
         <div class="chat"><div class="bubble" id="preview"></div></div>
         <div class="count" id="count"></div>

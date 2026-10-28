@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { buildCaption, missingFields } from '../public/templates.js';
 import { createApp } from '../server.js';
 
@@ -23,6 +22,11 @@ test('trade template turns lines into bullets', () => {
   assert.match(caption, /\*Heat receive:\*\n• Beal/);
 });
 
+test('empty required fields render as blank in preview, never "undefined"', () => {
+  assert.equal(buildCaption('breaking', {}, { blank: '…' }), '🚨 *BREAKING* 🚨\n\n*…*\n\n…');
+  assert.doesNotMatch(buildCaption('trade', {}), /undefined/);
+});
+
 test('missingFields lists required fields only', () => {
   assert.deepEqual(missingFields('final', { away: 'A', home: 'B' }), ['Away score', 'Home score']);
   assert.deepEqual(missingFields('custom', { body: 'hi' }), []);
@@ -34,51 +38,70 @@ async function listen(server) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-test('posts formatted caption + fetchable image URL to the bot', async (t) => {
-  const received = [];
-  const bot = createServer(async (req, res) => {
-    let body = '';
-    for await (const c of req) body += c;
-    received.push({ auth: req.headers.authorization, body: JSON.parse(body) });
-    res.end('ok');
-  });
-  const botUrl = await listen(bot);
-  const app = createApp({ botUrl, botToken: 'tok', password: 'pw', footer: '', publicUrl: '' });
-  const base = await listen(app);
-  t.after(() => { bot.close(); app.close(); });
+function fakeWhatsApp(state = 'connected') {
+  const sent = [];
+  return {
+    sent,
+    status: () => ({ state, pairingCode: null, target: 'NBA Daily', error: null }),
+    requestPairingCode: async () => 'ABCD1234',
+    send: async (msg) => { sent.push(msg); return 'NBA Daily'; },
+  };
+}
 
-  const post = (pw, payload) =>
-    fetch(`${base}/api/post`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-poster-password': pw },
-      body: JSON.stringify(payload),
-    });
+const cfg = { password: 'pw', footer: '', channel: 'https://whatsapp.com/channel/abc', dryRun: false };
 
-  assert.equal((await post('wrong', { template: 'custom', fields: { body: 'x' } })).status, 401);
-  assert.equal((await post('pw', { template: 'final', fields: {} })).status, 400);
-
-  const res = await post('pw', { template: 'stats', fields: { player: 'Jokić', line: '31/17/12' }, image: PNG_1PX });
-  assert.equal(res.status, 200);
-  assert.equal(received.length, 1);
-  assert.equal(received[0].auth, 'Bearer tok');
-  assert.equal(received[0].body.caption, '📊 *STAT LINE*\n\n*Jokić*\n🔥 31/17/12');
-  assert.equal(received[0].body.mimetype, 'image/png');
-
-  const img = await fetch(received[0].body.image);
-  assert.equal(img.status, 200);
-  assert.equal(img.headers.get('content-type'), 'image/png');
-});
-
-test('dry-run when no bot URL is configured', async (t) => {
-  const app = createApp({ botUrl: '', botToken: '', password: '', footer: '', publicUrl: '' });
+async function start(t, wa, overrides = {}) {
+  const app = createApp({ ...cfg, ...overrides }, wa);
   const base = await listen(app);
   t.after(() => app.close());
-  const res = await fetch(`${base}/api/post`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ template: 'custom', fields: { body: 'hello' } }),
-  });
-  const data = await res.json();
+  const call = (path, { pw = 'pw', body } = {}) =>
+    fetch(`${base}${path}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'content-type': 'application/json', 'x-poster-password': pw },
+      body: body && JSON.stringify(body),
+    });
+  return call;
+}
+
+test('posts formatted caption + image through WhatsApp', async (t) => {
+  const wa = fakeWhatsApp();
+  const call = await start(t, wa);
+
+  assert.equal((await call('/api/post', { pw: 'wrong', body: { template: 'custom', fields: { body: 'x' } } })).status, 401);
+  assert.equal((await call('/api/post', { body: { template: 'final', fields: {} } })).status, 400);
+
+  const res = await call('/api/post', { body: { template: 'stats', fields: { player: 'Jokić', line: '31/17/12' }, image: PNG_1PX } });
   assert.equal(res.status, 200);
-  assert.match(data.status, /dry-run/);
+  assert.equal((await res.json()).to, 'NBA Daily');
+  assert.equal(wa.sent.length, 1);
+  assert.equal(wa.sent[0].caption, '📊 *STAT LINE*\n\n*Jokić*\n🔥 31/17/12');
+  assert.equal(wa.sent[0].image.type, 'image/png');
+  assert.ok(wa.sent[0].image.buf.length > 0);
+});
+
+test('WhatsApp status and pairing endpoints are password-protected', async (t) => {
+  const call = await start(t, fakeWhatsApp('needs_link'));
+  assert.equal((await call('/api/whatsapp', { pw: 'nope' })).status, 401);
+  assert.equal((await (await call('/api/whatsapp')).json()).state, 'needs_link');
+  const pair = await call('/api/whatsapp/pair', { body: { phone: '+1 555 123 4567' } });
+  assert.equal((await pair.json()).pairingCode, 'ABCD1234');
+  assert.equal((await call('/api/config', { pw: 'nope' })).status, 200);
+});
+
+test('dry-run logs instead of sending', async (t) => {
+  const wa = fakeWhatsApp('needs_link');
+  const call = await start(t, wa, { dryRun: true });
+  const res = await call('/api/post', { body: { template: 'custom', fields: { body: 'hello' } } });
+  assert.equal(res.status, 200);
+  assert.match((await res.json()).status, /dry-run/);
+  assert.equal(wa.sent.length, 0);
+});
+
+test('unlinked WhatsApp returns a clear error', async (t) => {
+  const wa = fakeWhatsApp('needs_link');
+  wa.send = async () => { throw Object.assign(new Error('WhatsApp is not linked yet — link it first'), { status: 503 }); };
+  const call = await start(t, wa);
+  const res = await call('/api/post', { body: { template: 'custom', fields: { body: 'hello' } } });
+  assert.equal(res.status, 503);
+  assert.match((await res.json()).error, /not linked/);
 });

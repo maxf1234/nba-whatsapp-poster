@@ -110,11 +110,16 @@ export function missingFields(templateId, fields = {}) {
     .map((d) => d.label);
 }
 
-export function buildCaption(templateId, fields = {}, { footer = '' } = {}) {
+// `blank` fills empty required fields (the preview passes '…'); empty
+// optional fields always stay empty so their lines are dropped.
+export function buildCaption(templateId, fields = {}, { footer = '', blank = '' } = {}) {
   const t = TEMPLATES[templateId];
   if (!t) throw new Error(`Unknown template "${templateId}"`);
   const clean = Object.fromEntries(
-    Object.entries(fields).map(([k, v]) => [k, String(v ?? '').trim()]),
+    t.fields.map((d) => {
+      const v = String(fields[d.key] ?? '').trim();
+      return [d.key, v || (/optional/i.test(d.label) ? '' : blank)];
+    }),
   );
   const lines = t.build(clean).filter(Boolean); // drops empty optional fields
   let text = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();

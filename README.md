@@ -4,9 +4,11 @@ A tiny web page for posting to the NBA WhatsApp channel: pick a post type,
 add an image, fill in the fields, hit **Post**. The caption is always built
 from the same template, so every post keeps the channel's format.
 
-It sends to your **Railway WhatsApp bot** (the same one the deal alerts use)
-— `POST { image, caption }` with a bearer token. No scraping, no searching:
-you type it, it posts it.
+It's its own WhatsApp bot: it links to a WhatsApp account once (with a
+pairing code shown on the page) and posts straight to the channel. It uses
+Baileys, the same library as the DealsPulse bot, but it runs separately, so
+neither one can break the other. No scraping, no searching: you type it, it
+posts it.
 
 ## Post types
 
@@ -20,49 +22,41 @@ you type it, it posts it.
 | ✍️ Custom | optional bold title + free text |
 
 Every post gets `POST_FOOTER` appended. To change a format or add a new post
-type, edit `public/templates.js` — the preview and the real post both use it.
+type, edit `public/templates.js`. The preview and the real post both use it.
+
+## Deploy on Railway
+
+1. **New service** → this repo. It builds from the `Dockerfile` (health check
+   comes from `railway.json`).
+2. **Add a volume** to the service, mounted at **`/data`**. This stores the
+   WhatsApp login. Without it, every redeploy logs WhatsApp out.
+3. Settings → Networking → **Generate Domain**.
+4. **Variables:**
+
+| Variable | Value |
+|---|---|
+| `WHATSAPP_CHANNEL` | The channel's invite link, e.g. `https://whatsapp.com/channel/0029Va…` (channel → ⋯ → Share). |
+| `POSTER_PASSWORD` | A password you make up. **Set this**, or anyone with the link can post. |
+| `POST_FOOTER` | Optional. Added to every post, e.g. `📲 Follow for more NBA updates`. `\n` = new line. |
+| `DRY_RUN` | Optional. `1` = log posts instead of sending (for testing the formatting). |
+
+5. **Link WhatsApp (one time):** open the page, enter the password, and in the
+   **WhatsApp** card type the phone number (with country code) of the account
+   that **owns or admins the channel** → **Get pairing code**. On that phone:
+   WhatsApp → Linked devices → Link a device → *Link with phone number
+   instead* → type the code. The card turns 🟢 and shows the channel name.
+
+If the phone ever unlinks it (Linked devices → Log out), the page goes back
+to 🔴 and you just pair again.
 
 ## Run locally
 
 ```bash
-npm start          # http://localhost:3000 (dry-run: posts are just logged)
+npm install
+DRY_RUN=1 npm start   # http://localhost:3000
 npm test
 ```
 
-No dependencies to install. Images are resized in the browser (max 1600px
-JPEG) and can be picked, dragged in, or pasted from the clipboard.
-
-## Deploy on Railway
-
-1. New service → this repo (start command and health check come from
-   `railway.json`).
-2. Settings → Networking → **Generate Domain** (the bot fetches images from it).
-3. Variables:
-
-| Variable | Purpose |
-|---|---|
-| `WHATSAPP_BOT_URL` | Bot's send endpoint (same one the deal alerts use). Unset = dry-run. |
-| `WHATSAPP_BOT_TOKEN` | Bearer token for the bot. |
-| `POSTER_PASSWORD` | **Set this** — otherwise anyone with the link can post. |
-| `POST_FOOTER` | Appended to every post, e.g. `📲 Follow for more NBA updates`. `\n` = new line. |
-| `PUBLIC_URL` | Optional; auto-detected from `RAILWAY_PUBLIC_DOMAIN`. |
-
-## What the bot receives
-
-```json
-{
-  "image": "https://<poster-domain>/i/<uuid>",
-  "caption": "🏀 *FINAL*\n\nCeltics *112*\nKnicks *108*\n\n📲 Follow…",
-  "image_base64": "…",
-  "mimetype": "image/jpeg"
-}
-```
-
-`image` is a URL, exactly like the deal alerts. `image_base64` is sent too in
-case the bot would rather not fetch over the network. Text-only posts have no
-image fields. Uploaded images are kept in memory for 24h, so a redeploy clears
-them (the bot fetches right away, so that's fine).
-
-**The bot needs to send to the channel, not the deals chat.** If the bot is
-hard-wired to one chat/group, give it a target (e.g. a `chatId` field or a
-second endpoint) pointing at the NBA channel.
+Locally the WhatsApp login is stored in `./baileys_auth` (git-ignored).
+Images are resized in the browser (max 1600px JPEG) and can be picked,
+dragged in, or pasted from the clipboard.

@@ -59,12 +59,12 @@ function waFormat(text) {
     .replace(/(^|[\s(])~(\S(?:[^~\n]*\S)?)~(?=$|[\s).,!?:])/gm, '$1<s>$2</s>');
 }
 
-function currentCaption() {
-  return buildCaption(current, values[current] || {}, { footer });
+function currentCaption({ blank = '' } = {}) {
+  return buildCaption(current, values[current] || {}, { footer, blank });
 }
 
 function renderPreview() {
-  const caption = currentCaption();
+  const caption = currentCaption({ blank: '…' });
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   $('preview').innerHTML =
     (imageData ? `<img src="${imageData}" alt="Post image" />` : '') +
@@ -135,11 +135,13 @@ $('post').onclick = async () => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     store.set('pw', $('pw').value);
-    setMsg(data.status === 'sent' ? '✅ Posted!' : `⚠️ ${data.status}`, data.status === 'sent' ? 'ok' : '');
+    setMsg(data.status === 'sent' ? `✅ Posted${data.to ? ` to ${data.to}` : ''}!` : `⚠️ ${data.status}`, data.status === 'sent' ? 'ok' : '');
     values[current] = {};
     clearImage();
     renderForm();
     loadHistory();
+loadWhatsApp();
+setInterval(loadWhatsApp, 4000);
   } catch (err) {
     setMsg(`❌ ${err.message}`, 'err');
   } finally {
@@ -157,12 +159,63 @@ $('copy').onclick = async () => {
 async function loadHistory() {
   const res = await fetch('api/history', { headers: headers() }).catch(() => null);
   if (!res?.ok) return;
-  const { history, botConnected } = await res.json();
-  $('status').textContent = botConnected ? '🟢 Bot connected' : '🟡 Dry-run (no bot URL)';
+  const { history } = await res.json();
   $('history').innerHTML = history.length
     ? history.map((h) => `<li>${new Date(h.at).toLocaleString()} · ${escapeHtml(TEMPLATES[h.template]?.label || h.template)} · ${escapeHtml(h.status)}</li>`).join('')
     : '<li>Nothing yet</li>';
 }
+
+// ---------- WhatsApp link ----------
+
+const WA_LABEL = {
+  connected: '🟢 WhatsApp connected',
+  connecting: '🟡 Connecting to WhatsApp…',
+  needs_link: '🔴 WhatsApp not linked',
+  pairing: '🟡 Waiting for pairing code…',
+};
+
+async function loadWhatsApp() {
+  const res = await fetch('api/whatsapp', { headers: headers() }).catch(() => null);
+  if (res?.status === 401) {
+    $('waStatus').textContent = 'Enter the password to see the WhatsApp status.';
+    $('status').textContent = '';
+    return;
+  }
+  if (!res?.ok) return;
+  const wa = await res.json();
+  let text = WA_LABEL[wa.state] || wa.state;
+  if (wa.state === 'connected' && wa.target) text += ` · posting to ${wa.target}`;
+  if (wa.state === 'connected' && !wa.channelSet) text += ' · ⚠️ WHATSAPP_CHANNEL not set';
+  if (wa.error) text += ` · ⚠️ ${wa.error}`;
+  if (wa.dryRun) text += ' · dry-run on';
+  $('waStatus').textContent = text;
+  $('status').textContent = WA_LABEL[wa.state] || '';
+  $('waLink').hidden = !['needs_link', 'pairing'].includes(wa.state);
+  if (wa.pairingCode) {
+    $('pairCode').hidden = false;
+    $('code').textContent = wa.pairingCode.replace(/^(.{4})(.{4})$/, '$1-$2');
+  } else {
+    $('pairCode').hidden = true;
+  }
+}
+
+$('pair').onclick = async () => {
+  $('pair').disabled = true;
+  try {
+    const res = await fetch('api/whatsapp/pair', {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ phone: $('phone').value }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadWhatsApp();
+  } catch (err) {
+    $('waStatus').textContent = `❌ ${err.message}`;
+  } finally {
+    $('pair').disabled = false;
+  }
+};
 
 // ---------- Boot ----------
 
@@ -171,8 +224,10 @@ footer = cfg.footer || '';
 if (cfg.needsPassword) {
   $('pwWrap').hidden = false;
   $('pw').value = store.get('pw') || '';
-  $('pw').onchange = loadHistory;
+  $('pw').onchange = () => { store.set('pw', $('pw').value); loadHistory(); loadWhatsApp(); };
 }
 renderTabs();
 renderForm();
 loadHistory();
+loadWhatsApp();
+setInterval(loadWhatsApp, 4000);
