@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCaption, missingFields } from '../public/templates.js';
 import { createApp } from '../server.js';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const PNG_1PX =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -48,7 +51,10 @@ function fakeWhatsApp(state = 'connected') {
   };
 }
 
-const cfg = { password: 'pw', footer: '', channel: 'https://whatsapp.com/channel/abc', dryRun: false };
+const cfg = {
+  password: 'pw', footer: '', channel: 'https://whatsapp.com/channel/abc', dryRun: false, timeZone: 'UTC',
+  dataDir: await mkdtemp(join(tmpdir(), 'poster-')),
+};
 
 async function start(t, wa, overrides = {}) {
   const app = createApp({ ...cfg, ...overrides }, wa);
@@ -104,4 +110,24 @@ test('unlinked WhatsApp returns a clear error', async (t) => {
   const res = await call('/api/post', { body: { template: 'custom', fields: { body: 'hello' } } });
   assert.equal(res.status, 503);
   assert.match((await res.json()).error, /not linked/);
+});
+
+test('queue endpoints: add, list, send now', async (t) => {
+  const wa = fakeWhatsApp();
+  const call = await start(t, wa, { dataDir: await mkdtemp(join(tmpdir(), 'poster-')) });
+  await call('/api/queue/settings', { body: { paused: true } });
+  const added = await (await call('/api/queue', { body: { template: 'custom', fields: { body: 'later' }, image: PNG_1PX } })).json();
+  assert.equal(added.position, 1);
+  assert.equal((await call('/api/queue', { body: { template: 'final', fields: {} } })).status, 400);
+
+  const list = await (await call('/api/queue')).json();
+  assert.equal(list.items.length, 1);
+  assert.equal((await call(`/api/queue/${added.id}/image`)).headers.get('content-type'), 'image/png');
+
+  const sent = await (await call(`/api/queue/${added.id}/send`, { body: {} })).json();
+  assert.equal(sent.status, 'sent');
+  assert.equal(wa.sent[0].caption, 'later');
+  assert.equal((await (await call('/api/queue')).json()).items.length, 0);
+  const { history } = await (await call('/api/history')).json();
+  assert.match(history[0].status, /queued/);
 });

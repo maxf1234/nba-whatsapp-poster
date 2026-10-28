@@ -62,6 +62,23 @@
     .code { font: 700 28px/1.2 ui-monospace, monospace; letter-spacing: .12em; text-align: center;
       margin: 14px 0 6px; padding: 12px; border-radius: 10px; background: var(--bg); }
     .steps { font-size: 13px; color: var(--muted); padding-left: 18px; margin: 8px 0 0; }
+    .qsettings { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+    .qsettings label { margin: 0; display: flex; gap: 6px; align-items: center; color: var(--text); font-size: 14px; }
+    select { padding: 7px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg);
+      color: var(--text); font: inherit; font-size: 14px; }
+    .btn.small { padding: 7px 12px; font-size: 14px; }
+    .qstatus { font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+    .qlist { list-style: none; padding: 0; margin: 0; }
+    .qlist li { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+    .qlist img, .qlist .noimg { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; flex: none;
+      background: var(--bg); display: grid; place-items: center; color: var(--muted); font-size: 13px; }
+    .qbody { min-width: 0; flex: 1; }
+    .qwhen { font-size: 12px; color: var(--muted); }
+    .qtext { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .qbtns { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    .qbtns button { border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 8px;
+      padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+    .qbtns button:disabled { opacity: .4; cursor: default; }
     .count { font-size: 12px; color: var(--muted); text-align: right; margin-top: 4px; }
   </style>
 </head>
@@ -73,6 +90,7 @@
   </header>
 
   <main>
+    <div>
     <section class="card">
       <div class="tabs" id="tabs" role="group" aria-label="Post type"></div>
 
@@ -90,10 +108,24 @@
 
       <div class="row">
         <button class="btn ghost" id="clear" type="button">Clear</button>
-        <button class="btn primary" id="post" type="button">Post to channel</button>
+        <button class="btn ghost" id="post" type="button">Post now</button>
+        <button class="btn primary" id="queue" type="button">Add to queue</button>
       </div>
       <div class="msg" id="msg" role="status"></div>
     </section>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Queue</h2>
+      <div class="qsettings">
+        <label>Send one <select id="qInterval" aria-label="Interval"></select></label>
+        <label>between <select id="qStart" aria-label="Start hour"></select></label>
+        <label>and <select id="qEnd" aria-label="End hour"></select></label>
+        <button class="btn ghost small" id="qPause" type="button">⏸ Pause</button>
+      </div>
+      <div class="qstatus" id="qStatus"></div>
+      <ol class="qlist" id="qList"></ol>
+    </section>
+    </div>
 
     <aside>
       <section class="card wa" id="waCard">

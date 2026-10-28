@@ -1,8 +1,26 @@
 # NBA Channel Poster
 
 A tiny web page for posting to the NBA WhatsApp channel: pick a post type,
-add an image, fill in the fields, hit **Post**. The caption is always built
-from the same template, so every post keeps the channel's format.
+add an image, fill in the fields, then **Add to queue** or **Post now**. The
+caption is always built from the same template, so every post keeps the
+channel's format.
+
+## The queue
+
+Load up a batch of posts (say ten) and they go out **one at a time** on a
+schedule you set on the page:
+
+- **Send one every** 30 min · 1 h · 1.5 h · 2 h · 3 h · 4 h · 6 h · 8 h · 12 h
+- **Active hours**, e.g. 9 AM – 11 PM (in `TIMEZONE`): nothing goes out
+  overnight; the next post waits for the morning.
+- Each queued post shows when it will go out. Move it ↑/↓, delete it, or
+  **Send now**. **Pause** stops the queue without losing anything.
+- The first post goes out right away (if inside active hours); each next one
+  goes out one interval after the last post, including posts sent with
+  **Post now** from the queue.
+- The queue is saved on the Railway volume, so redeploys don't lose it. If a
+  send fails (e.g. WhatsApp reconnecting), the post stays first in line and is
+  retried 5 minutes later; the error shows on the page.
 
 It's its own WhatsApp bot: it links to a WhatsApp account once (with a
 pairing code shown on the page) and posts straight to the channel. It uses
@@ -29,7 +47,8 @@ type, edit `public/templates.js`. The preview and the real post both use it.
 1. **New service** → this repo. It builds from the `Dockerfile` (health check
    comes from `railway.json`).
 2. **Add a volume** to the service, mounted at **`/data`**. This stores the
-   WhatsApp login. Without it, every redeploy logs WhatsApp out.
+   WhatsApp login and the queue. Without it, every redeploy logs WhatsApp out
+   and empties the queue.
 3. Settings → Networking → **Generate Domain**.
 4. **Variables:**
 
@@ -38,6 +57,7 @@ type, edit `public/templates.js`. The preview and the real post both use it.
 | `WHATSAPP_CHANNEL` | The channel's invite link, e.g. `https://whatsapp.com/channel/0029Va…` (channel → ⋯ → Share). |
 | `POSTER_PASSWORD` | A password you make up. **Set this**, or anyone with the link can post. |
 | `POST_FOOTER` | Optional. Added to every post, e.g. `📲 Follow for more NBA updates`. `\n` = new line. |
+| `TIMEZONE` | Optional. Time zone for the active hours, default `America/New_York` (e.g. `America/Los_Angeles`, `Europe/London`). |
 | `DRY_RUN` | Optional. `1` = log posts instead of sending (for testing the formatting). |
 
 5. **Link WhatsApp (one time):** open the page, enter the password, and in the
@@ -57,6 +77,6 @@ DRY_RUN=1 npm start   # http://localhost:3000
 npm test
 ```
 
-Locally the WhatsApp login is stored in `./baileys_auth` (git-ignored).
+Locally the WhatsApp login and the queue are stored in `./data` (git-ignored).
 Images are resized in the browser (max 1600px JPEG) and can be picked,
 dragged in, or pasted from the clipboard.

@@ -119,15 +119,15 @@ function headers() {
   return { 'content-type': 'application/json', 'x-poster-password': $('pw').value };
 }
 
-$('post').onclick = async () => {
+async function submit(mode) {
   const missing = missingFields(current, values[current]);
   if (missing.length) return setMsg(`Fill in: ${missing.join(', ')}`, 'err');
-  if (!confirm('Post this to the WhatsApp channel?')) return;
+  if (mode === 'now' && !confirm('Post this to the WhatsApp channel right now?')) return;
 
-  $('post').disabled = true;
-  setMsg('Posting…');
+  $('post').disabled = $('queue').disabled = true;
+  setMsg(mode === 'now' ? 'Posting…' : 'Adding to queue…');
   try {
-    const res = await fetch('api/post', {
+    const res = await fetch(mode === 'now' ? 'api/post' : 'api/queue', {
       method: 'POST',
       headers: headers(),
       body: JSON.stringify({ template: current, fields: values[current], image: imageData }),
@@ -135,19 +135,138 @@ $('post').onclick = async () => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     store.set('pw', $('pw').value);
-    setMsg(data.status === 'sent' ? `✅ Posted${data.to ? ` to ${data.to}` : ''}!` : `⚠️ ${data.status}`, data.status === 'sent' ? 'ok' : '');
+    if (mode === 'now') {
+      setMsg(data.status === 'sent' ? `✅ Posted${data.to ? ` to ${data.to}` : ''}!` : `⚠️ ${data.status}`, data.status === 'sent' ? 'ok' : '');
+    } else {
+      setMsg(`✅ Queued as #${data.position} · goes out ${fmtWhen(data.eta)}`, 'ok');
+    }
     values[current] = {};
     clearImage();
     renderForm();
     loadHistory();
-loadWhatsApp();
-setInterval(loadWhatsApp, 4000);
+    loadQueue();
   } catch (err) {
     setMsg(`❌ ${err.message}`, 'err');
   } finally {
-    $('post').disabled = false;
+    $('post').disabled = $('queue').disabled = false;
+  }
+}
+
+$('queue').onclick = () => submit('queue');
+$('post').onclick = () => submit('now');
+
+// ---------- Queue ----------
+
+const INTERVALS = [30, 60, 90, 120, 180, 240, 360, 480, 720];
+const fmtInterval = (m) => (m < 60 ? `${m} min` : `${m / 60} hour${m === 60 ? '' : 's'}`);
+const fmtHour = (h) => new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' });
+
+function fmtWhen(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  if (ms - Date.now() < 60 * 1000) return 'now';
+  const today = new Date().toDateString() === d.toDateString();
+  const tomorrow = new Date(Date.now() + 864e5).toDateString() === d.toDateString();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return today ? `at ${time}` : tomorrow ? `tomorrow ${time}` : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
+}
+
+let queueSettingsDrawn = false;
+
+function drawSettings(s) {
+  if (!queueSettingsDrawn) {
+    $('qInterval').innerHTML = INTERVALS.map((m) => `<option value="${m}">every ${fmtInterval(m)}</option>`).join('');
+    const hours = [...Array(24).keys()].map((h) => `<option value="${h}">${fmtHour(h)}</option>`).join('');
+    $('qStart').innerHTML = hours;
+    $('qEnd').innerHTML = hours;
+    queueSettingsDrawn = true;
+  }
+  if (!INTERVALS.includes(s.intervalMin)) {
+    $('qInterval').insertAdjacentHTML('beforeend', `<option value="${s.intervalMin}">every ${fmtInterval(s.intervalMin)}</option>`);
+  }
+  $('qInterval').value = s.intervalMin;
+  $('qStart').value = s.startHour;
+  $('qEnd').value = s.endHour;
+  $('qPause').textContent = s.paused ? '▶ Resume' : '⏸ Pause';
+}
+
+async function queueCall(path, method = 'GET', body) {
+  const res = await fetch(path, { method, headers: headers(), body: body && JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function drawQueue(q) {
+  drawSettings(q.settings);
+  const n = q.items.length;
+  let status = n ? `${n} post${n === 1 ? '' : 's'} waiting` : 'Queue is empty — add posts and they go out one at a time.';
+  if (n && q.settings.paused) status += ' · ⏸ paused';
+  else if (n) status += ` · next ${fmtWhen(q.items[0].eta)}`;
+  if (q.settings.startHour !== q.settings.endHour) {
+    const zone = q.timeZone?.split('/').pop().replace(/_/g, ' ');
+    status += ` · only ${fmtHour(q.settings.startHour)}–${fmtHour(q.settings.endHour)}${zone ? ` ${zone} time` : ''}`;
+  }
+  if (q.error) status += ` · ⚠️ last send failed: ${q.error}`;
+  $('qStatus').textContent = status;
+
+  $('qList').innerHTML = q.items.map((it, i) => {
+    const label = TEMPLATES[it.template]?.label || it.template;
+    const first = it.caption.split('\n').map((l) => l.replace(/[*_~]/g, '').trim()).filter(Boolean).slice(it.template === 'custom' ? 0 : 1, 4).join(' · ');
+    return `<li data-id="${it.id}">
+      ${it.hasImage ? `<img alt="" data-src="api/queue/${it.id}/image" />` : '<div class="noimg">Aa</div>'}
+      <div class="qbody">
+        <div class="qwhen">#${i + 1} · ${q.settings.paused ? 'paused' : escapeHtml(fmtWhen(it.eta))}</div>
+        <div class="qtext"><b>${escapeHtml(label)}</b> — ${escapeHtml(first)}</div>
+        <div class="qbtns">
+          <button type="button" data-act="up" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
+          <button type="button" data-act="down" ${i === n - 1 ? 'disabled' : ''} aria-label="Move down">↓</button>
+          <button type="button" data-act="send">Send now</button>
+          <button type="button" data-act="del" aria-label="Delete">✕</button>
+        </div>
+      </div>
+    </li>`;
+  }).join('');
+  // Thumbnails need the password header, so fetch them rather than <img src>.
+  for (const img of $('qList').querySelectorAll('img[data-src]')) {
+    fetch(img.dataset.src, { headers: headers() })
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((b) => { if (b) img.src = URL.createObjectURL(b); })
+      .catch(() => {});
+  }
+}
+
+async function loadQueue() {
+  try { drawQueue(await queueCall('api/queue')); } catch {}
+}
+
+$('qList').onclick = async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = btn.closest('li').dataset.id;
+  const act = btn.dataset.act;
+  if (act === 'del' && !confirm('Delete this queued post?')) return;
+  if (act === 'send' && !confirm('Send this post right now?')) return;
+  btn.disabled = true;
+  try {
+    const q = act === 'del' ? await queueCall(`api/queue/${id}`, 'DELETE')
+      : await queueCall(`api/queue/${id}/${act}`, 'POST');
+    drawQueue(q);
+    if (act === 'send') { setMsg('✅ Sent from the queue', 'ok'); loadHistory(); }
+  } catch (err) {
+    setMsg(`❌ ${err.message}`, 'err');
+    loadQueue();
   }
 };
+
+async function saveSettings(patch) {
+  try { drawQueue(await queueCall('api/queue/settings', 'POST', patch)); }
+  catch (err) { setMsg(`❌ ${err.message}`, 'err'); }
+}
+$('qInterval').onchange = () => saveSettings({ intervalMin: Number($('qInterval').value) });
+$('qStart').onchange = () => saveSettings({ startHour: Number($('qStart').value) });
+$('qEnd').onchange = () => saveSettings({ endHour: Number($('qEnd').value) });
+$('qPause').onclick = () => saveSettings({ paused: $('qPause').textContent.includes('Pause') });
 
 $('clear').onclick = () => { values[current] = {}; clearImage(); renderForm(); setMsg(''); };
 
@@ -224,10 +343,12 @@ footer = cfg.footer || '';
 if (cfg.needsPassword) {
   $('pwWrap').hidden = false;
   $('pw').value = store.get('pw') || '';
-  $('pw').onchange = () => { store.set('pw', $('pw').value); loadHistory(); loadWhatsApp(); };
+  $('pw').onchange = () => { store.set('pw', $('pw').value); loadHistory(); loadWhatsApp(); loadQueue(); };
 }
 renderTabs();
 renderForm();
 loadHistory();
 loadWhatsApp();
+loadQueue();
 setInterval(loadWhatsApp, 4000);
+setInterval(loadQueue, 30000);
