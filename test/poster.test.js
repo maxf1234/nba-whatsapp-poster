@@ -47,6 +47,10 @@ function fakeWhatsApp(state = 'connected') {
     sent,
     status: () => ({ state, pairingCode: null, target: 'NBA Daily', error: null }),
     requestPairingCode: async () => 'ABCD1234',
+    setChannel: async (link) => {
+      if (!link.includes('whatsapp.com/channel/')) throw Object.assign(new Error('Paste the channel link'), { status: 400 });
+      return { jid: '1@newsletter', name: 'NBA Daily', role: 'OWNER', canPost: true };
+    },
     send: async (msg) => { sent.push(msg); return 'NBA Daily'; },
   };
 }
@@ -130,4 +134,12 @@ test('queue endpoints: add, list, send now', async (t) => {
   assert.equal((await (await call('/api/queue')).json()).items.length, 0);
   const { history } = await (await call('/api/history')).json();
   assert.match(history[0].status, /queued/);
+});
+
+test('channel can be set from the page', async (t) => {
+  const call = await start(t, fakeWhatsApp());
+  assert.equal((await call('/api/whatsapp/channel', { pw: 'nope', body: { link: 'x' } })).status, 401);
+  assert.equal((await call('/api/whatsapp/channel', { body: { link: 'NBA Daily' } })).status, 400);
+  const res = await call('/api/whatsapp/channel', { body: { link: 'https://whatsapp.com/channel/abc' } });
+  assert.equal((await res.json()).channel.name, 'NBA Daily');
 });

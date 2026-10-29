@@ -303,13 +303,12 @@ async function loadWhatsApp() {
   if (!res?.ok) return;
   const wa = await res.json();
   let text = WA_LABEL[wa.state] || wa.state;
-  if (wa.state === 'connected' && wa.target) text += ` · posting to ${wa.target}`;
-  if (wa.state === 'connected' && !wa.channelSet) text += ' · ⚠️ WHATSAPP_CHANNEL not set';
   if (wa.error) text += ` · ⚠️ ${wa.error}`;
   if (wa.dryRun) text += ' · dry-run on';
   $('waStatus').textContent = text;
   $('status').textContent = WA_LABEL[wa.state] || '';
   $('waLink').hidden = !['needs_link', 'pairing'].includes(wa.state);
+  drawChannel(wa);
   if (wa.pairingCode) {
     $('pairCode').hidden = false;
     $('code').textContent = wa.pairingCode.replace(/^(.{4})(.{4})$/, '$1-$2');
@@ -317,6 +316,44 @@ async function loadWhatsApp() {
     $('pairCode').hidden = true;
   }
 }
+
+function drawChannel(wa) {
+  $('waChannel').hidden = wa.state !== 'connected';
+  const ch = wa.channel;
+  if (!ch) {
+    $('chNow').innerHTML = '⚠️ <b>No channel set yet</b> — paste the link below.';
+  } else {
+    const name = escapeHtml(ch.name || 'checking…');
+    const verdict = ch.canPost === true ? '✅ can post'
+      : ch.canPost === false ? '❌ only a follower — make this account an admin'
+      : '';
+    $('chNow').innerHTML = `Posting to <b>${name}</b>${verdict ? ` · ${verdict}` : ''}`;
+  }
+  // Prefill once, but never overwrite what someone is typing.
+  if (ch?.link && !$('chLink').value && document.activeElement !== $('chLink')) $('chLink').value = ch.link;
+}
+
+$('chSave').onclick = async () => {
+  $('chSave').disabled = true;
+  $('chNow').textContent = 'Checking channel…';
+  try {
+    const res = await fetch('api/whatsapp/channel', {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ link: $('chLink').value }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    setMsg(data.channel.canPost === false
+      ? `⚠️ Saved "${data.channel.name}", but this account is only a follower — posts will fail until it's an admin`
+      : `✅ Channel set: ${data.channel.name}`, data.channel.canPost === false ? 'err' : 'ok');
+    await loadWhatsApp();
+  } catch (err) {
+    $('chNow').textContent = `❌ ${err.message}`;
+  } finally {
+    $('chSave').disabled = false;
+  }
+};
 
 $('pair').onclick = async () => {
   $('pair').disabled = true;

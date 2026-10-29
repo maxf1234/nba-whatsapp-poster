@@ -3,8 +3,11 @@
 // the poster instead of only in Railway logs.
 //
 // Auth lives in AUTH_DIR (a Railway volume) so linking is a one-time thing.
+// The channel to post to is set from the page (saved to channelFile) or
+// falls back to WHATSAPP_CHANNEL.
 
-import { rm } from 'node:fs/promises';
+import { readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 // Baileys wants a pino-like logger; a silent no-op keeps logs clean.
 const logger = {
@@ -14,18 +17,55 @@ const logger = {
 };
 
 const isJid = (s) => /@(newsletter|g\.us)$/.test(s);
-const channelInviteCode = (s) => s.match(/whatsapp\.com\/channel\/([A-Za-z0-9_-]+)/i)?.[1] ?? null;
+export const channelInviteCode = (s) => s.match(/whatsapp\.com\/channel\/([A-Za-z0-9_-]+)/i)?.[1] ?? null;
+const err = (message, status) => Object.assign(new Error(message), { status });
 
-export function createWhatsApp({ authDir, target }) {
+// Only owners and admins can post to a WhatsApp channel.
+const canPostAs = (role) => (role ? ['OWNER', 'ADMIN'].includes(String(role).toUpperCase()) : null);
+
+// `socket` is for tests: a fake, already-connected Baileys socket.
+export function createWhatsApp({ authDir, target = '', channelFile, socket = null }) {
   let baileys; // lazy-loaded so tests and dry-run never touch the network
-  let sock = null;
-  let state = 'connecting'; // connecting | needs_link | pairing | connected
+  let sock = socket;
+  let state = socket ? 'connected' : 'connecting'; // connecting | needs_link | pairing | connected
   let pairingCode = null;
-  let targetJid = isJid(target) ? target : null;
-  let targetName = null;
+  let channel = null; // { jid, name, role, canPost } for the current target
   let lastError = null;
 
+  // Look a channel link / id up on WhatsApp (needs a live connection).
+  async function lookup(input) {
+    const code = channelInviteCode(input);
+    if (!code && !isJid(input)) {
+      throw err('Paste the channel link (WhatsApp → channel → ⋯ → Share → Copy link)', 400);
+    }
+    if (input.endsWith('@g.us')) {
+      const meta = await sock.groupMetadata(input).catch(() => null);
+      if (!meta) throw err('Group not found, or this WhatsApp account is not in it', 404);
+      return { jid: input, name: meta.subject || input, role: null, canPost: true };
+    }
+    const meta = await sock.newsletterMetadata(code ? 'invite' : 'jid', code || input).catch((e) => {
+      throw err(`Could not look up that channel: ${e.message}`, 404);
+    });
+    if (!meta?.id) throw err('Channel not found — check the link', 404);
+    const role = meta.viewer_metadata?.role ?? null;
+    return { jid: meta.id, name: meta.thread_metadata?.name?.text || meta.id, role, canPost: canPostAs(role) };
+  }
+
+  async function ensureChannel() {
+    if (!target) throw err('No channel set — paste the channel link in the WhatsApp card', 400);
+    if (!channel) {
+      channel = await lookup(target);
+      console.log(`Posting to ${channel.name} (${channel.jid}) as ${channel.role ?? 'unknown role'}`);
+    }
+    return channel;
+  }
+
   async function connect() {
+    if (channelFile) {
+      try {
+        target = JSON.parse(await readFile(channelFile, 'utf8')).target || target;
+      } catch {} // nothing saved yet: keep WHATSAPP_CHANNEL
+    }
     baileys ??= await import('@whiskeysockets/baileys');
     const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers } = baileys;
     const { state: auth, saveCreds } = await useMultiFileAuthState(authDir);
@@ -54,7 +94,7 @@ export function createWhatsApp({ authDir, target }) {
         pairingCode = null;
         lastError = null;
         console.log('WhatsApp connected');
-        resolveTarget().catch((e) => { lastError = e.message; });
+        if (target) ensureChannel().catch((e) => { lastError = e.message; });
       } else if (connection === 'close') {
         const code = lastDisconnect?.error?.output?.statusCode;
         if (code === baileys.DisconnectReason.loggedOut) {
@@ -72,29 +112,33 @@ export function createWhatsApp({ authDir, target }) {
     });
   }
 
-  // Channel invite link → @newsletter id (needs a live connection). Posting
-  // to a channel requires the linked account to be its owner or an admin.
-  async function resolveTarget() {
-    if (!target) throw new Error('WHATSAPP_CHANNEL is not set');
-    if (targetJid && targetName) return targetJid;
-    const code = channelInviteCode(target);
-    if (!targetJid && !code) throw new Error('WHATSAPP_CHANNEL must be a channel link or an @newsletter / @g.us id');
-    const meta = code
-      ? await sock.newsletterMetadata('invite', code)
-      : targetJid.endsWith('@newsletter')
-        ? await sock.newsletterMetadata('jid', targetJid).catch(() => null)
-        : await sock.groupMetadata(targetJid).catch(() => null);
-    if (code && !meta?.id) throw new Error('Channel link did not resolve — check WHATSAPP_CHANNEL');
-    targetJid ??= meta.id;
-    targetName = meta?.thread_metadata?.name?.text ?? meta?.name ?? meta?.subject ?? targetJid;
-    console.log(`Posting to ${targetName} (${targetJid})`);
-    return targetJid;
-  }
-
   return {
     connect,
 
-    status: () => ({ state, pairingCode, target: targetName, error: lastError }),
+    status: () => ({
+      state,
+      pairingCode,
+      target: channel?.name ?? null,
+      channel: target ? { link: target, name: channel?.name ?? null, role: channel?.role ?? null, canPost: channel?.canPost ?? null } : null,
+      error: lastError,
+    }),
+
+    // Set the channel from the page: look it up, check this account may
+    // post there, then save it so it sticks across restarts.
+    async setChannel(input) {
+      const link = String(input ?? '').trim();
+      if (state !== 'connected') throw err('Link WhatsApp first, then set the channel', 409);
+      const found = await lookup(link);
+      target = link;
+      channel = found;
+      lastError = null;
+      if (channelFile) {
+        await mkdir(dirname(channelFile), { recursive: true });
+        await writeFile(channelFile, JSON.stringify({ target: link }));
+      }
+      console.log(`Channel set: ${found.name} (${found.jid}) as ${found.role ?? 'unknown role'}`);
+      return found;
+    },
 
     // Digits only, with country code. Returns the 8-character code the user
     // types on their phone: Linked Devices → Link a Device → "Link with phone
@@ -113,9 +157,12 @@ export function createWhatsApp({ authDir, target }) {
       if (state !== 'connected') {
         throw Object.assign(new Error('WhatsApp is not linked yet — link it first'), { status: 503 });
       }
-      const jid = await resolveTarget();
-      await sock.sendMessage(jid, image ? { image: image.buf, mimetype: image.type, caption } : { text: caption });
-      return targetName;
+      const ch = await ensureChannel();
+      if (ch.canPost === false) {
+        throw err(`This WhatsApp account is only a follower of "${ch.name}" — make it an admin of the channel to post`, 403);
+      }
+      await sock.sendMessage(ch.jid, image ? { image: image.buf, mimetype: image.type, caption } : { text: caption });
+      return ch.name;
     },
   };
 }

@@ -88,7 +88,13 @@ async function readPost(req, cfg) {
   return { template, caption: buildCaption(template, fields, { footer: cfg.footer }), image: img };
 }
 
-export function createApp(cfg = config(), wa = createWhatsApp({ authDir: cfg.authDir, target: cfg.channel }), queue) {
+const waOptions = (cfg) => ({
+  authDir: cfg.authDir,
+  target: cfg.channel, // default until a channel is set from the page
+  channelFile: join(cfg.dataDir, 'channel.json'),
+});
+
+export function createApp(cfg = config(), wa = createWhatsApp(waOptions(cfg)), queue) {
   const history = []; // last few posts, newest first
   const record = (template, caption, status, to) => {
     history.unshift({ at: new Date().toISOString(), template, caption, status, to });
@@ -129,7 +135,8 @@ export function createApp(cfg = config(), wa = createWhatsApp({ authDir: cfg.aut
       return queue.view();
     },
     'GET /api/history': () => ({ history }),
-    'GET /api/whatsapp': () => ({ ...wa.status(), dryRun: cfg.dryRun, channelSet: Boolean(cfg.channel) }),
+    'GET /api/whatsapp': () => ({ ...wa.status(), dryRun: cfg.dryRun }),
+    'POST /api/whatsapp/channel': async (req) => ({ ok: true, channel: await wa.setChannel((await readJson(req)).link) }),
     'POST /api/whatsapp/pair': async (req) => ({ pairingCode: await wa.requestPairingCode((await readJson(req)).phone) }),
   };
 
@@ -193,14 +200,13 @@ export function createApp(cfg = config(), wa = createWhatsApp({ authDir: cfg.aut
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const cfg = config();
-  const wa = createWhatsApp({ authDir: cfg.authDir, target: cfg.channel });
+  const wa = createWhatsApp(waOptions(cfg));
   const app = createApp(cfg, wa);
   await app.queue.load();
   app.queue.start();
   app.listen(PORT, () => {
     console.log(`NBA poster on http://localhost:${PORT}`);
     if (cfg.dryRun) console.log('DRY_RUN is on — posts are logged, not sent');
-    if (!cfg.channel) console.log('WHATSAPP_CHANNEL not set — set it to the channel invite link');
     if (!cfg.password) console.log('POSTER_PASSWORD not set — anyone with the URL can post!');
     console.log(`Queue: ${app.queue.view().items.length} waiting · times in ${cfg.timeZone}`);
   });

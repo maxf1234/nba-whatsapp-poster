@@ -79,6 +79,8 @@
     .qbtns button { border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 8px;
       padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer; }
     .qbtns button:disabled { opacity: .4; cursor: default; }
+    .chnow { font-size: 14px; margin: 2px 0 8px; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
     .count { font-size: 12px; color: var(--muted); text-align: right; margin-top: 4px; }
   </style>
 </head>
@@ -143,6 +145,14 @@
               <li>Type the code above</li>
             </ol>
           </div>
+        </div>
+        <div id="waChannel" hidden>
+          <label for="chLink">Channel to post to</label>
+          <div class="chnow" id="chNow"></div>
+          <input type="text" id="chLink" placeholder="https://whatsapp.com/channel/…" autocomplete="off" />
+          <div class="row"><button class="btn ghost" id="chSave" type="button" style="flex:1">Save channel</button></div>
+          <div class="hint">In WhatsApp: open the channel → tap its name → <b>Share</b> → <b>Copy link</b>, then paste it here.
+            The linked WhatsApp account must be the channel's owner or an admin.</div>
         </div>
       </section>
       <section class="card" style="margin-top:16px">

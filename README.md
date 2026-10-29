@@ -54,7 +54,7 @@ type, edit `public/templates.js`. The preview and the real post both use it.
 
 | Variable | Value |
 |---|---|
-| `WHATSAPP_CHANNEL` | The channel's invite link, e.g. `https://whatsapp.com/channel/0029Va…` (channel → ⋯ → Share). |
+| `WHATSAPP_CHANNEL` | Optional. Default channel link; normally you set the channel on the page instead (step 6). |
 | `POSTER_PASSWORD` | A password you make up. **Set this**, or anyone with the link can post. |
 | `POST_FOOTER` | Optional. Added to every post, e.g. `📲 Follow for more NBA updates`. `\n` = new line. |
 | `TIMEZONE` | Optional. Time zone for the active hours, default `America/New_York` (e.g. `America/Los_Angeles`, `Europe/London`). |
@@ -64,7 +64,13 @@ type, edit `public/templates.js`. The preview and the real post both use it.
    **WhatsApp** card type the phone number (with country code) of the account
    that **owns or admins the channel** → **Get pairing code**. On that phone:
    WhatsApp → Linked devices → Link a device → *Link with phone number
-   instead* → type the code. The card turns 🟢 and shows the channel name.
+   instead* → type the code. The card turns 🟢.
+6. **Set the channel:** in WhatsApp open the channel → tap its name →
+   **Share** → **Copy link**, paste it in the card's **Channel to post to**
+   box → **Save channel**. The page looks the channel up and shows its name
+   and whether the linked account can post there (✅ owner/admin, ❌ only a
+   follower). It's saved on the volume, so this is one-time too; paste a
+   different link any time to switch channels.
 
 If the phone ever unlinks it (Linked devices → Log out), the page goes back
 to 🔴 and you just pair again.
