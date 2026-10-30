@@ -39,7 +39,19 @@
       color: var(--muted); cursor: pointer; position: relative; }
     .drop.over { border-color: var(--accent); }
     .drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-    .drop img { max-width: 100%; max-height: 220px; border-radius: 8px; display: block; margin: 0 auto 8px; }
+    .drop img, .drop video { max-width: 100%; max-height: 220px; border-radius: 8px; display: block; margin: 0 auto 8px; }
+    .bubble video { width: 100%; border-radius: 6px; display: block; background: #000; }
+    input[type=datetime-local] { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+      background: var(--bg); color: var(--text); font: inherit; }
+    .opt { color: var(--muted); font-size: 12px; }
+    .thumb { position: relative; flex: none; }
+    .vbadge { position: absolute; left: 4px; bottom: 4px; background: rgba(0,0,0,.7); color: #fff;
+      font-size: 11px; padding: 1px 5px; border-radius: 6px; }
+    .qtime { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    .qtime[hidden] { display: none; }
+    .qtime input { flex: 1 1 180px; padding: 6px 8px; font-size: 14px; }
+    .qtime button { border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 8px;
+      padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer; }
     .row { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
     .btn { border: 0; border-radius: 10px; padding: 12px 18px; font: inherit; font-weight: 600; cursor: pointer; }
     .btn.primary { background: var(--accent); color: var(--accent-ink); flex: 1; }
@@ -97,8 +109,8 @@
       <div class="tabs" id="tabs" role="group" aria-label="Post type"></div>
 
       <div class="drop" id="drop">
-        <input type="file" id="file" accept="image/jpeg,image/png,image/webp" aria-label="Image" />
-        <div id="dropInner">📷 Tap to add an image, or drop / paste one here<br><small>Optional</small></div>
+        <input type="file" id="file" accept="image/jpeg,image/png,image/webp,video/*" aria-label="Photo or video" />
+        <div id="dropInner">📷 Tap to add a photo or video, or drop / paste one here<br><small>Optional</small></div>
       </div>
 
       <form id="form" autocomplete="off"></form>
@@ -107,6 +119,9 @@
         <label for="pw">Password</label>
         <input type="password" id="pw" placeholder="Poster password" />
       </div>
+
+      <label for="sendAt">Send at <span class="opt">(optional — leave empty to follow the queue spacing)</span></label>
+      <input type="datetime-local" id="sendAt" />
 
       <div class="row">
         <button class="btn ghost" id="clear" type="button">Clear</button>

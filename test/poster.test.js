@@ -2,12 +2,24 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCaption, missingFields } from '../public/templates.js';
 import { createApp } from '../server.js';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const PNG_1PX =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+// Real sample media made with ffmpeg (skipped where ffmpeg isn't installed).
+const hasFfmpeg = (() => { try { execFileSync('ffmpeg', ['-version']); return true; } catch { return false; } })();
+const fixtures = await mkdtemp(join(tmpdir(), 'fixtures-'));
+const ff = (...args) => execFileSync('ffmpeg', ['-v', 'error', '-y', ...args]);
+if (hasFfmpeg) {
+  ff('-f', 'lavfi', '-i', 'testsrc=size=320x180', '-frames:v', '1', join(fixtures, 'wide.png'));
+  ff('-f', 'lavfi', '-i', 'testsrc=size=180x320', '-frames:v', '1', join(fixtures, 'tall.jpg'));
+  // already WhatsApp-friendly (H.264/AAC MP4) → only remuxed
+  ff('-f', 'lavfi', '-i', 'testsrc=size=320x180:duration=3', '-f', 'lavfi', '-i', 'sine=duration=3',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', join(fixtures, 'clip.mp4'));
+  // not WhatsApp-friendly (MPEG-4 Part 2 in AVI) → converted
+  ff('-f', 'lavfi', '-i', 'testsrc=size=240x320:duration=2', '-c:v', 'mpeg4', join(fixtures, 'clip.avi'));
+}
 
 test('breaking template keeps the channel format and skips empty optionals', () => {
   const caption = buildCaption('breaking', { headline: ' Big news ', details: '', source: 'Shams' }, { footer: '📲 Follow' });
@@ -70,23 +82,87 @@ async function start(t, wa, overrides = {}) {
       headers: { 'content-type': 'application/json', 'x-poster-password': pw },
       body: body && JSON.stringify(body),
     });
+  call.base = base;
+  call.dataDir = overrides.dataDir ?? cfg.dataDir;
   return call;
 }
 
-test('posts formatted caption + image through WhatsApp', async (t) => {
+async function upload(base, file, type, pw = 'pw') {
+  const res = await fetch(`${base}/api/media`, {
+    method: 'POST',
+    headers: { 'content-type': type, 'x-poster-password': pw },
+    body: await readFile(join(fixtures, file)),
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+test('posts formatted caption through WhatsApp', async (t) => {
   const wa = fakeWhatsApp();
   const call = await start(t, wa);
 
   assert.equal((await call('/api/post', { pw: 'wrong', body: { template: 'custom', fields: { body: 'x' } } })).status, 401);
   assert.equal((await call('/api/post', { body: { template: 'final', fields: {} } })).status, 400);
 
-  const res = await call('/api/post', { body: { template: 'stats', fields: { player: 'Jokić', line: '31/17/12' }, image: PNG_1PX } });
+  const res = await call('/api/post', { body: { template: 'stats', fields: { player: 'Jokić', line: '31/17/12' } } });
   assert.equal(res.status, 200);
   assert.equal((await res.json()).to, 'NBA Daily');
-  assert.equal(wa.sent.length, 1);
-  assert.equal(wa.sent[0].caption, '📊 *STAT LINE*\n\n*Jokić*\n🔥 31/17/12');
-  assert.equal(wa.sent[0].image.type, 'image/png');
-  assert.ok(wa.sent[0].image.buf.length > 0);
+  assert.deepEqual(wa.sent, [{ caption: '📊 *STAT LINE*\n\n*Jokić*\n🔥 31/17/12', media: null }]);
+});
+
+test('photos keep their real size (no square crop)', { skip: !hasFfmpeg && 'needs ffmpeg' }, async (t) => {
+  const wa = fakeWhatsApp();
+  const dataDir = await mkdtemp(join(tmpdir(), 'poster-'));
+  const call = await start(t, wa, { dataDir });
+  const base = call.base;
+
+  assert.equal((await upload(base, 'wide.png', 'image/png', 'wrong')).status, 401);
+  assert.equal((await upload(base, 'wide.png', 'application/pdf')).status, 415);
+
+  for (const [file, type, w, h] of [['wide.png', 'image/png', 320, 180], ['tall.jpg', 'image/jpeg', 180, 320]]) {
+    const up = await upload(base, file, type);
+    assert.equal(up.status, 200);
+    assert.deepEqual([up.body.kind, up.body.width, up.body.height], ['image', w, h]);
+    const res = await call('/api/post', { body: { template: 'custom', fields: { body: file }, mediaId: up.body.id } });
+    assert.equal(res.status, 200);
+    const { media } = wa.sent.at(-1);
+    assert.deepEqual([media.kind, media.mimetype, media.width, media.height], ['image', type, w, h]);
+    assert.ok(media.thumbnail.length > 100, 'has a JPEG thumbnail');
+  }
+  // sent "post now" media is cleaned up; reusing an id fails clearly
+  assert.deepEqual(await readdir(join(dataDir, 'media')), []);
+  const first = await upload(base, 'wide.png', 'image/png');
+  await call('/api/post', { body: { template: 'custom', fields: { body: 'a' }, mediaId: first.body.id } });
+  const again = await call('/api/post', { body: { template: 'custom', fields: { body: 'a' }, mediaId: first.body.id } });
+  assert.equal(again.status, 410);
+});
+
+test('videos are converted to MP4 with size, length and thumbnail', { skip: !hasFfmpeg && 'needs ffmpeg' }, async (t) => {
+  const wa = fakeWhatsApp();
+  const call = await start(t, wa, { dataDir: await mkdtemp(join(tmpdir(), 'poster-')) });
+
+  const mp4 = await upload(call.base, 'clip.mp4', 'video/mp4');
+  assert.equal(mp4.status, 200);
+  assert.deepEqual([mp4.body.kind, mp4.body.mimetype, mp4.body.width, mp4.body.height, mp4.body.seconds], ['video', 'video/mp4', 320, 180, 3]);
+
+  const avi = await upload(call.base, 'clip.avi', 'video/x-msvideo');
+  assert.equal(avi.status, 200, JSON.stringify(avi.body));
+  assert.deepEqual([avi.body.width, avi.body.height, avi.body.seconds], [240, 320, 2]);
+
+  const res = await call('/api/post', { body: { template: 'custom', fields: { body: 'dunk' }, mediaId: avi.body.id } });
+  assert.equal(res.status, 200);
+  const { media } = wa.sent[0];
+  assert.equal(media.kind, 'video');
+  assert.equal(media.seconds, 2);
+  assert.ok(media.thumbnail.length > 100);
+  // the still-pending MP4 upload is on disk as H.264
+  const stored = join(call.dataDir, 'media', `${mp4.body.id}.mp4`);
+  const probe = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_streams', stored]));
+  assert.equal(probe.streams.find((x) => x.codec_type === 'video').codec_name, 'h264');
+
+  const bad = await fetch(`${call.base}/api/media`, {
+    method: 'POST', headers: { 'content-type': 'video/mp4', 'x-poster-password': 'pw' }, body: 'not a video',
+  });
+  assert.equal(bad.status, 422);
 });
 
 test('WhatsApp status and pairing endpoints are password-protected', async (t) => {
@@ -116,21 +192,29 @@ test('unlinked WhatsApp returns a clear error', async (t) => {
   assert.match((await res.json()).error, /not linked/);
 });
 
-test('queue endpoints: add, list, send now', async (t) => {
+test('queue endpoints: add with media and a set time, list, send now', { skip: !hasFfmpeg && 'needs ffmpeg' }, async (t) => {
   const wa = fakeWhatsApp();
   const call = await start(t, wa, { dataDir: await mkdtemp(join(tmpdir(), 'poster-')) });
   await call('/api/queue/settings', { body: { paused: true } });
-  const added = await (await call('/api/queue', { body: { template: 'custom', fields: { body: 'later' }, image: PNG_1PX } })).json();
-  assert.equal(added.position, 1);
+  const up = await upload(call.base, 'clip.mp4', 'video/mp4');
+  const at = Date.now() + 3 * 60 * 60 * 1000;
+  const added = await (await call('/api/queue', { body: { template: 'custom', fields: { body: 'later' }, mediaId: up.body.id, sendAt: at } })).json();
+  assert.equal(added.eta, at);
   assert.equal((await call('/api/queue', { body: { template: 'final', fields: {} } })).status, 400);
+  assert.equal((await call('/api/queue', { body: { template: 'custom', fields: { body: 'x' }, sendAt: Date.now() - 3600e3 } })).status, 400);
 
   const list = await (await call('/api/queue')).json();
   assert.equal(list.items.length, 1);
-  assert.equal((await call(`/api/queue/${added.id}/image`)).headers.get('content-type'), 'image/png');
+  assert.deepEqual([list.items[0].kind, list.items[0].seconds, list.items[0].sendAt], ['video', 3, at]);
+  assert.equal((await call(`/api/queue/${added.id}/image`)).headers.get('content-type'), 'image/jpeg');
+
+  const moved = await (await call(`/api/queue/${added.id}/time`, { body: { sendAt: null } })).json();
+  assert.equal(moved.items[0].sendAt, null);
 
   const sent = await (await call(`/api/queue/${added.id}/send`, { body: {} })).json();
   assert.equal(sent.status, 'sent');
   assert.equal(wa.sent[0].caption, 'later');
+  assert.equal(wa.sent[0].media.kind, 'video');
   assert.equal((await (await call('/api/queue')).json()).items.length, 0);
   const { history } = await (await call('/api/history')).json();
   assert.match(history[0].status, /queued/);

@@ -1,7 +1,7 @@
 # NBA Channel Poster
 
 A tiny web page for posting to the NBA WhatsApp channel: pick a post type,
-add an image, fill in the fields, then **Add to queue** or **Post now**. The
+add a photo or video, fill in the fields, then **Add to queue** or **Post now**. The
 caption is always built from the same template, so every post keeps the
 channel's format.
 
@@ -13,14 +13,31 @@ schedule you set on the page:
 - **Send one every** 30 min · 1 h · 1.5 h · 2 h · 3 h · 4 h · 6 h · 8 h · 12 h
 - **Active hours**, e.g. 9 AM – 11 PM (in `TIMEZONE`): nothing goes out
   overnight; the next post waits for the morning.
+- **Set an exact time** for any post: fill in **Send at** before adding it,
+  or tap **⏰ Set time** on a queued post (📌 marks posts with a set time).
+  Set times go out exactly then — even outside the active hours — and don't
+  shift the other posts. **Use queue spacing** puts a post back in line.
 - Each queued post shows when it will go out. Move it ↑/↓, delete it, or
-  **Send now**. **Pause** stops the queue without losing anything.
+  **Send now**. **Pause** stops the queue (set times included) without
+  losing anything.
 - The first post goes out right away (if inside active hours); each next one
   goes out one interval after the last post, including posts sent with
   **Post now** from the queue.
 - The queue is saved on the Railway volume, so redeploys don't lose it. If a
   send fails (e.g. WhatsApp reconnecting), the post stays first in line and is
   retried 5 minutes later; the error shows on the page.
+
+## Photos and videos
+
+- **Photos keep their shape.** For channels, WhatsApp doesn't measure the
+  picture itself, so without help it shows a square crop. The server measures
+  every photo and sends its real width/height and a thumbnail with it.
+  Photos are shrunk in the browser to 1600 px on the long side first.
+- **Videos** (up to 100 MB) — iPhone `.mov` included. The server converts them
+  with ffmpeg to H.264/AAC MP4, the format WhatsApp plays everywhere (long
+  side ≤ 1280 px), and adds the length and a thumbnail. Videos that are
+  already MP4/H.264 are only repackaged, which is instant; others take a bit
+  (roughly as long as the clip on Railway's small machines).
 
 It's its own WhatsApp bot: it links to a WhatsApp account once (with a
 pairing code shown on the page) and posts straight to the channel. It uses
@@ -83,6 +100,7 @@ DRY_RUN=1 npm start   # http://localhost:3000
 npm test
 ```
 
-Locally the WhatsApp login and the queue are stored in `./data` (git-ignored).
-Images are resized in the browser (max 1600px JPEG) and can be picked,
-dragged in, or pasted from the clipboard.
+Locally the WhatsApp login, the queue and uploads are stored in `./data`
+(git-ignored). Photo/video handling needs `ffmpeg` installed (the Docker
+image has it); without it, photos still post but may show square-cropped,
+and videos are refused.

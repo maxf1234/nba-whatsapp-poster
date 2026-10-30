@@ -1,11 +1,12 @@
 // NBA channel poster: a tiny web form that posts straight to a WhatsApp
 // channel from its own linked WhatsApp account.
 //
-// Pick a template, drop an image, fill the fields, then either post now or
-// add it to the queue (queue.js), which sends one post every N hours inside
-// the active hours. The caption is built from the shared template, so the
-// channel format never drifts. WhatsApp (whatsapp.js) is linked from the
-// page with a pairing code.
+// Pick a template, add a photo or video, fill the fields, then either post
+// now or add it to the queue (queue.js), which sends one post every N hours
+// inside the active hours, or at a time you pick. The caption is built from
+// the shared template, so the channel format never drifts. Photos/videos are
+// uploaded first (media.js); WhatsApp (whatsapp.js) is linked from the page
+// with a pairing code.
 //
 // `npm start`
 
@@ -16,12 +17,12 @@ import { extname, join } from 'node:path';
 import { buildCaption, missingFields, TEMPLATES } from './public/templates.js';
 import { createWhatsApp } from './whatsapp.js';
 import { createQueue } from './queue.js';
+import { createMedia } from './media.js';
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = new URL('./public/', import.meta.url);
-const MAX_BODY = 12 * 1024 * 1024; // base64 image + fields
+const MAX_BODY = 256 * 1024; // JSON only — photos/videos go through /api/media
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
-const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 export function config(env = process.env) {
   // Railway volume mounted at /data keeps the WhatsApp login and the queue
@@ -59,7 +60,7 @@ async function readJson(req) {
   const chunks = [];
   for await (const c of req) {
     size += c.length;
-    if (size > MAX_BODY) throw Object.assign(new Error('Image too large (max ~8 MB)'), { status: 413 });
+    if (size > MAX_BODY) throw Object.assign(new Error('Request too large'), { status: 413 });
     chunks.push(c);
   }
   try {
@@ -69,23 +70,18 @@ async function readJson(req) {
   }
 }
 
-function parseDataUrl(dataUrl) {
-  const m = /^data:([\w/+.-]+);base64,(.+)$/s.exec(dataUrl || '');
-  if (!m || !IMAGE_TYPES.has(m[1])) return null;
-  return { type: m[1], buf: Buffer.from(m[2], 'base64') };
-}
-
-// Validate a submitted post and build its caption + image.
-async function readPost(req, cfg) {
-  const { template, fields, image } = await readJson(req);
+// Validate a submitted post and build its caption. `mediaId` refers to an
+// earlier /api/media upload; the post takes ownership of that file.
+async function readPost(req, cfg, media) {
+  const { template, fields, mediaId, sendAt } = await readJson(req);
   const missing = missingFields(template, fields);
   if (missing.length) throw Object.assign(new Error(`Missing: ${missing.join(', ')}`), { status: 400 });
-  let img;
-  if (image) {
-    img = parseDataUrl(image);
-    if (!img) throw Object.assign(new Error('Image must be JPEG, PNG or WebP'), { status: 400 });
-  }
-  return { template, caption: buildCaption(template, fields, { footer: cfg.footer }), image: img };
+  return {
+    template,
+    caption: buildCaption(template, fields, { footer: cfg.footer }),
+    media: mediaId ? media.take(mediaId) : null,
+    sendAt,
+  };
 }
 
 const waOptions = (cfg) => ({
@@ -102,12 +98,13 @@ export function createApp(cfg = config(), wa = createWhatsApp(waOptions(cfg)), q
   };
 
   // The one place a post actually leaves: WhatsApp, or the log in dry-run.
-  async function deliver({ caption, image }) {
+  async function deliver({ caption, media }) {
     if (cfg.dryRun) {
-      console.log(`[dry-run]${image ? ' (+ image)' : ''}\n${caption}\n`);
+      const what = media ? ` (+ ${media.kind}${media.width ? ` ${media.width}×${media.height}` : ''})` : '';
+      console.log(`[dry-run]${what}\n${caption}\n`);
       return { status: 'dry-run (DRY_RUN is on)' };
     }
-    return { status: 'sent', to: await wa.send({ caption, image }) };
+    return { status: 'sent', to: await wa.send({ caption, media }) };
   }
 
   queue ??= createQueue({
@@ -116,18 +113,32 @@ export function createApp(cfg = config(), wa = createWhatsApp(waOptions(cfg)), q
     deliver,
     onSent: (item) => record(item.template, item.caption, `${item.result.status} (queued)`, item.result.to),
   });
+  const media = createMedia({ dir: cfg.dataDir, keep: () => queue.files() });
 
   const routes = {
+    'POST /api/media': (req) => media.store(req),
     'POST /api/post': async (req) => {
-      const post = await readPost(req, cfg);
-      const result = await deliver(post);
-      record(post.template, post.caption, result.status, result.to);
-      return { ok: true, ...result };
+      const post = await readPost(req, cfg, media);
+      try {
+        const result = await deliver({ caption: post.caption, media: post.media && media.toDeliverable(post.media) });
+        record(post.template, post.caption, result.status, result.to);
+        return { ok: true, ...result };
+      } finally {
+        if (post.media) await media.remove(post.media);
+      }
     },
     'POST /api/queue': async (req) => {
-      const id = await queue.add(await readPost(req, cfg));
+      const post = await readPost(req, cfg, media);
+      let id;
+      try {
+        id = await queue.add(post);
+      } catch (e) {
+        if (post.media) await media.remove(post.media);
+        throw e;
+      }
       const view = queue.view();
-      return { ok: true, id, position: view.items.findIndex((i) => i.id === id) + 1, eta: view.items.at(-1)?.eta };
+      const item = view.items.find((i) => i.id === id);
+      return { ok: true, id, position: view.items.indexOf(item) + 1, eta: item.eta };
     },
     'GET /api/queue': () => queue.view(),
     'POST /api/queue/settings': async (req) => {
@@ -151,17 +162,21 @@ export function createApp(cfg = config(), wa = createWhatsApp(waOptions(cfg)), q
       const route = routes[`${req.method} ${url.pathname}`];
       if (route) return send(res, 200, await route(req));
 
-      // Per-item queue actions: /api/queue/<id>[/image|/send|/up|/down]
-      const m = /^\/api\/queue\/([\w-]+)(?:\/(image|send|up|down))?$/.exec(url.pathname);
+      // Per-item queue actions: /api/queue/<id>[/image|/send|/up|/down|/time]
+      const m = /^\/api\/queue\/([\w-]+)(?:\/(image|send|up|down|time))?$/.exec(url.pathname);
       if (m) {
         const [, id, action] = m;
         if (req.method === 'DELETE' && !action) { await queue.remove(id); return send(res, 200, queue.view()); }
         if (req.method === 'GET' && action === 'image') {
-          const img = await queue.image(id);
+          const img = await queue.thumbnail(id);
           return img ? send(res, 200, img.buf, { 'content-type': img.type }) : send(res, 404, 'No image');
         }
         if (req.method === 'POST' && (action === 'up' || action === 'down')) {
           await queue.move(id, action === 'up' ? -1 : 1);
+          return send(res, 200, queue.view());
+        }
+        if (req.method === 'POST' && action === 'time') {
+          await queue.setTime(id, (await readJson(req)).sendAt);
           return send(res, 200, queue.view());
         }
         if (req.method === 'POST' && action === 'send') {

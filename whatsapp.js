@@ -23,6 +23,14 @@ const err = (message, status) => Object.assign(new Error(message), { status });
 // Only owners and admins can post to a WhatsApp channel.
 const canPostAs = (role) => (role ? ['OWNER', 'ADMIN'].includes(String(role).toUpperCase()) : null);
 
+export function mediaMessage(media, caption) {
+  const msg = { [media.kind]: { url: media.path }, mimetype: media.mimetype, caption };
+  if (media.width && media.height) Object.assign(msg, { width: media.width, height: media.height });
+  if (media.thumbnail) msg.jpegThumbnail = media.thumbnail;
+  if (media.kind === 'video' && media.seconds) msg.seconds = media.seconds;
+  return msg;
+}
+
 // `socket` is for tests: a fake, already-connected Baileys socket.
 export function createWhatsApp({ authDir, target = '', channelFile, socket = null }) {
   let baileys; // lazy-loaded so tests and dry-run never touch the network
@@ -153,7 +161,11 @@ export function createWhatsApp({ authDir, target = '', channelFile, socket = nul
       return pairingCode;
     },
 
-    async send({ caption, image }) {
+    // `media` (optional): { kind: 'image'|'video', path, mimetype, width,
+    // height, seconds, thumbnail }. For channels WhatsApp doesn't work out
+    // the size or thumbnail itself, so without width/height it shows a
+    // square crop — media.js measures them on upload.
+    async send({ caption, media }) {
       if (state !== 'connected') {
         throw Object.assign(new Error('WhatsApp is not linked yet — link it first'), { status: 503 });
       }
@@ -161,7 +173,7 @@ export function createWhatsApp({ authDir, target = '', channelFile, socket = nul
       if (ch.canPost === false) {
         throw err(`This WhatsApp account is only a follower of "${ch.name}" — make it an admin of the channel to post`, 403);
       }
-      await sock.sendMessage(ch.jid, image ? { image: image.buf, mimetype: image.type, caption } : { text: caption });
+      await sock.sendMessage(ch.jid, media ? mediaMessage(media, caption) : { text: caption });
       return ch.name;
     },
   };

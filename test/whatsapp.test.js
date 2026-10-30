@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createWhatsApp } from '../whatsapp.js';
+import { createWhatsApp, mediaMessage } from '../whatsapp.js';
 
 const LINK = 'https://whatsapp.com/channel/0029VaNBA';
 
@@ -67,4 +67,16 @@ test('env WHATSAPP_CHANNEL still works as the default', async (t) => {
   const socket = fakeSocket('ADMIN');
   const wa = createWhatsApp({ authDir: await tmp(t), target: LINK, socket });
   assert.equal(await wa.send({ caption: 'hi' }), 'NBA Daily');
+});
+
+test('media messages carry size, thumbnail and video length', () => {
+  const thumb = Buffer.from('jpg');
+  assert.deepEqual(
+    mediaMessage({ kind: 'image', path: '/d/a.jpg', mimetype: 'image/jpeg', width: 1600, height: 900, thumbnail: thumb }, 'cap'),
+    { image: { url: '/d/a.jpg' }, mimetype: 'image/jpeg', caption: 'cap', width: 1600, height: 900, jpegThumbnail: thumb },
+  );
+  assert.deepEqual(
+    mediaMessage({ kind: 'video', path: '/d/v.mp4', mimetype: 'video/mp4', width: 720, height: 1280, seconds: 42 }, 'dunk'),
+    { video: { url: '/d/v.mp4' }, mimetype: 'video/mp4', caption: 'dunk', width: 720, height: 1280, seconds: 42 },
+  );
 });

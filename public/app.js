@@ -7,7 +7,8 @@ const store = {
 };
 
 let footer = '';
-let imageData = null; // resized JPEG data URL
+let media = null; // { kind: 'image'|'video', blob, url } — the selected photo/video
+const MAX_VIDEO_MB = 100;
 let current = store.get('template') in TEMPLATES ? store.get('template') : 'breaking';
 const values = {}; // templateId → { field: value } so switching tabs keeps drafts
 
@@ -67,45 +68,64 @@ function renderPreview() {
   const caption = currentCaption({ blank: '…' });
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   $('preview').innerHTML =
-    (imageData ? `<img src="${imageData}" alt="Post image" />` : '') +
+    (media?.kind === 'image' ? `<img src="${media.url}" alt="Post image" />` : '') +
+    (media?.kind === 'video' ? `<video src="${media.url}" controls muted playsinline></video>` : '') +
     `<div class="cap">${waFormat(caption) || '<span style="opacity:.5">Your post…</span>'}</div>` +
     `<div class="time">${time}</div>`;
   $('count').textContent = `${caption.length} characters`;
 }
 
-// ---------- Image: pick / drop / paste, resized client-side ----------
+// ---------- Photo / video: pick / drop / paste ----------
+// Photos are shrunk in the browser (long side ≤ 1600 px, same aspect ratio);
+// videos are uploaded as-is and converted for WhatsApp on the server.
 
-async function loadImage(file) {
-  if (!file || !file.type.startsWith('image/')) return;
+const EMPTY_DROP = '📷 Tap to add a photo or video, or drop / paste one here<br><small>Optional</small>';
+
+async function loadMedia(file) {
+  if (!file) return;
+  if (file.type.startsWith('video/') || /\.(mov|mp4|m4v|webm|3gp)$/i.test(file.name || '')) {
+    if (file.size > MAX_VIDEO_MB * 1024 * 1024) return setMsg(`❌ Video is too big (max ${MAX_VIDEO_MB} MB)`, 'err');
+    setMedia({ kind: 'video', blob: file, url: URL.createObjectURL(file) });
+    return;
+  }
+  if (!file.type.startsWith('image/')) return setMsg('❌ Only photos and videos can be added', 'err');
   const bitmap = await createImageBitmap(file);
   const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(bitmap.width * scale);
   canvas.height = Math.round(bitmap.height * scale);
   canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  imageData = canvas.toDataURL('image/jpeg', 0.88);
-  $('dropInner').innerHTML =
-    `<img src="${imageData}" alt="Selected image" /><small>Tap to change · </small>` +
-    `<small><a href="#" id="rmImg">remove</a></small>`;
-  $('rmImg').onclick = (e) => { e.preventDefault(); e.stopPropagation(); clearImage(); };
+  const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.88));
+  setMedia({ kind: 'image', blob, url: URL.createObjectURL(blob) });
+}
+
+function setMedia(m) {
+  if (media) URL.revokeObjectURL(media.url);
+  media = m;
+  const tag = m.kind === 'video'
+    ? `<video src="${m.url}" muted playsinline></video><small>🎬 ${(m.blob.size / 1024 / 1024).toFixed(1)} MB video · Tap to change · </small>`
+    : `<img src="${m.url}" alt="Selected photo" /><small>Tap to change · </small>`;
+  $('dropInner').innerHTML = `${tag}<small><a href="#" id="rmImg">remove</a></small>`;
+  $('rmImg').onclick = (e) => { e.preventDefault(); e.stopPropagation(); clearMedia(); };
   renderPreview();
 }
 
-function clearImage() {
-  imageData = null;
+function clearMedia() {
+  if (media) URL.revokeObjectURL(media.url);
+  media = null;
   $('file').value = '';
-  $('dropInner').innerHTML = '📷 Tap to add an image, or drop / paste one here<br><small>Optional</small>';
+  $('dropInner').innerHTML = EMPTY_DROP;
   renderPreview();
 }
 
-$('file').onchange = (e) => loadImage(e.target.files[0]);
+$('file').onchange = (e) => loadMedia(e.target.files[0]);
 const drop = $('drop');
 drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
 drop.ondragleave = () => drop.classList.remove('over');
-drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); loadImage(e.dataTransfer.files[0]); };
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); loadMedia(e.dataTransfer.files[0]); };
 document.addEventListener('paste', (e) => {
-  const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith('image/'));
-  if (item) loadImage(item.getAsFile());
+  const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith('image/') || i.type.startsWith('video/'));
+  if (item) loadMedia(item.getAsFile());
 });
 
 // ---------- Posting ----------
@@ -119,18 +139,50 @@ function headers() {
   return { 'content-type': 'application/json', 'x-poster-password': $('pw').value };
 }
 
+// Upload the photo/video with a progress readout; resolves to its media id.
+function uploadMedia() {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'api/media');
+    xhr.setRequestHeader('content-type', media.blob.type || 'video/quicktime');
+    xhr.setRequestHeader('x-poster-password', $('pw').value);
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round((e.loaded / e.total) * 100);
+      setMsg(pct < 100 ? `Uploading ${media.kind}… ${pct}%`
+        : media.kind === 'video' ? 'Converting video for WhatsApp… (can take a minute)' : 'Processing photo…');
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data.id);
+      else reject(new Error(data.error || `Upload failed (HTTP ${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error('Upload failed — check your connection'));
+    xhr.send(media.blob);
+  });
+}
+
+function sendAtValue() {
+  const v = $('sendAt').value;
+  return v ? new Date(v).getTime() : null;
+}
+
 async function submit(mode) {
   const missing = missingFields(current, values[current]);
   if (missing.length) return setMsg(`Fill in: ${missing.join(', ')}`, 'err');
+  const sendAt = mode === 'queue' ? sendAtValue() : null;
+  if (sendAt && sendAt < Date.now() - 60 * 1000) return setMsg('❌ That "send at" time has already passed', 'err');
   if (mode === 'now' && !confirm('Post this to the WhatsApp channel right now?')) return;
 
   $('post').disabled = $('queue').disabled = true;
-  setMsg(mode === 'now' ? 'Posting…' : 'Adding to queue…');
   try {
+    const mediaId = media ? await uploadMedia() : null;
+    setMsg(mode === 'now' ? 'Posting…' : 'Adding to queue…');
     const res = await fetch(mode === 'now' ? 'api/post' : 'api/queue', {
       method: 'POST',
       headers: headers(),
-      body: JSON.stringify({ template: current, fields: values[current], image: imageData }),
+      body: JSON.stringify({ template: current, fields: values[current], mediaId, sendAt }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -138,10 +190,11 @@ async function submit(mode) {
     if (mode === 'now') {
       setMsg(data.status === 'sent' ? `✅ Posted${data.to ? ` to ${data.to}` : ''}!` : `⚠️ ${data.status}`, data.status === 'sent' ? 'ok' : '');
     } else {
-      setMsg(`✅ Queued as #${data.position} · goes out ${fmtWhen(data.eta)}`, 'ok');
+      setMsg(`✅ Queued · goes out ${fmtWhen(data.eta)}`, 'ok');
     }
     values[current] = {};
-    clearImage();
+    $('sendAt').value = '';
+    clearMedia();
     renderForm();
     loadHistory();
     loadQueue();
@@ -210,19 +263,32 @@ function drawQueue(q) {
   if (q.error) status += ` · ⚠️ last send failed: ${q.error}`;
   $('qStatus').textContent = status;
 
+  const flex = q.items.filter((it) => !it.sendAt).map((it) => it.id);
   $('qList').innerHTML = q.items.map((it, i) => {
     const label = TEMPLATES[it.template]?.label || it.template;
     const first = it.caption.split('\n').map((l) => l.replace(/[*_~]/g, '').trim()).filter(Boolean).slice(it.template === 'custom' ? 0 : 1, 4).join(' · ');
+    const when = q.settings.paused ? 'paused' : fmtWhen(it.eta);
+    const thumb = it.kind
+      ? `<div class="thumb"><img alt="" data-src="api/queue/${it.id}/image" />${it.kind === 'video' ? `<span class="vbadge">▶ ${fmtDur(it.seconds)}</span>` : ''}</div>`
+      : '<div class="noimg">Aa</div>';
+    const k = flex.indexOf(it.id);
+    const arrows = it.sendAt ? '' : `
+          <button type="button" data-act="up" ${k === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
+          <button type="button" data-act="down" ${k === flex.length - 1 ? 'disabled' : ''} aria-label="Move down">↓</button>`;
     return `<li data-id="${it.id}">
-      ${it.hasImage ? `<img alt="" data-src="api/queue/${it.id}/image" />` : '<div class="noimg">Aa</div>'}
+      ${thumb}
       <div class="qbody">
-        <div class="qwhen">#${i + 1} · ${q.settings.paused ? 'paused' : escapeHtml(fmtWhen(it.eta))}</div>
+        <div class="qwhen">#${i + 1} · ${it.sendAt ? '📌 ' : ''}${escapeHtml(when)}${it.sendAt ? ' (set time)' : ''}</div>
         <div class="qtext"><b>${escapeHtml(label)}</b> — ${escapeHtml(first)}</div>
-        <div class="qbtns">
-          <button type="button" data-act="up" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
-          <button type="button" data-act="down" ${i === n - 1 ? 'disabled' : ''} aria-label="Move down">↓</button>
+        <div class="qbtns">${arrows}
+          <button type="button" data-act="time">⏰ ${it.sendAt ? 'Change time' : 'Set time'}</button>
           <button type="button" data-act="send">Send now</button>
           <button type="button" data-act="del" aria-label="Delete">✕</button>
+        </div>
+        <div class="qtime" hidden>
+          <input type="datetime-local" value="${it.sendAt ? toLocalInput(it.sendAt) : ''}" aria-label="Send at" />
+          <button type="button" data-act="time-save">Save</button>
+          ${it.sendAt ? '<button type="button" data-act="time-clear">Use queue spacing</button>' : ''}
         </div>
       </div>
     </li>`;
@@ -236,21 +302,59 @@ function drawQueue(q) {
   }
 }
 
+const fmtDur = (sec) => (sec ? `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}` : '');
+
+// ms → value for <input type="datetime-local"> in the viewer's own time zone.
+function toLocalInput(ms) {
+  const d = new Date(ms);
+  return new Date(ms - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+let editingTime = false; // don't redraw the list under an open time editor
+
 async function loadQueue() {
+  if (editingTime) return;
   try { drawQueue(await queueCall('api/queue')); } catch {}
 }
 
 $('qList').onclick = async (e) => {
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
-  const id = btn.closest('li').dataset.id;
+  const li = btn.closest('li');
+  const id = li.dataset.id;
   const act = btn.dataset.act;
+  if (act === 'time') {
+    const box = li.querySelector('.qtime');
+    box.hidden = !box.hidden;
+    editingTime = !box.hidden;
+    if (!box.hidden) {
+      const input = box.querySelector('input');
+      const half = 30 * 60 * 1000; // default: the next :00 or :30, at least 30 min out
+      if (!input.value) input.value = toLocalInput(Math.ceil((Date.now() + half) / half) * half);
+      input.focus();
+    }
+    return;
+  }
+  if (act === 'time-save' || act === 'time-clear') {
+    const v = li.querySelector('.qtime input').value;
+    const sendAt = act === 'time-clear' ? null : v ? new Date(v).getTime() : null;
+    if (act === 'time-save' && !sendAt) return setMsg('❌ Pick a date and time first', 'err');
+    try {
+      editingTime = false;
+      drawQueue(await queueCall(`api/queue/${id}/time`, 'POST', { sendAt }));
+      setMsg(sendAt ? `✅ Set to go out ${fmtWhen(sendAt)}` : '✅ Back to the queue spacing', 'ok');
+    } catch (err) {
+      setMsg(`❌ ${err.message}`, 'err');
+    }
+    return;
+  }
   if (act === 'del' && !confirm('Delete this queued post?')) return;
   if (act === 'send' && !confirm('Send this post right now?')) return;
   btn.disabled = true;
   try {
     const q = act === 'del' ? await queueCall(`api/queue/${id}`, 'DELETE')
       : await queueCall(`api/queue/${id}/${act}`, 'POST');
+    editingTime = false;
     drawQueue(q);
     if (act === 'send') { setMsg('✅ Sent from the queue', 'ok'); loadHistory(); }
   } catch (err) {
@@ -268,7 +372,7 @@ $('qStart').onchange = () => saveSettings({ startHour: Number($('qStart').value)
 $('qEnd').onchange = () => saveSettings({ endHour: Number($('qEnd').value) });
 $('qPause').onclick = () => saveSettings({ paused: $('qPause').textContent.includes('Pause') });
 
-$('clear').onclick = () => { values[current] = {}; clearImage(); renderForm(); setMsg(''); };
+$('clear').onclick = () => { values[current] = {}; $('sendAt').value = ''; clearMedia(); renderForm(); setMsg(''); };
 
 $('copy').onclick = async () => {
   try { await navigator.clipboard.writeText(currentCaption()); setMsg('Copied', 'ok'); }
